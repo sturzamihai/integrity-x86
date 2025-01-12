@@ -9,6 +9,7 @@ dta     db 128 dup (0)      ; DTA for file search
 
 msgNoFiles  db 0Dh,0Ah, 'No files found.', 0Dh,0Ah, '$'
 msgDone     db 0Dh,0Ah, '[Done]', 0Dh,0Ah, '$'
+msgDir      db ' <DIR>',0
 
 .code
 start:
@@ -82,59 +83,79 @@ add_wildcards:
     inc     di
 
     ;---------------------------------------------------------------------
-    ; (Optional) Print the final path, for debugging (DOS fn 09h => '$')
-    ; Overwrite the final 0 with '$', then restore it to 0 after printing.
+    ; 6) Print the final path + newline
     ;---------------------------------------------------------------------
-    push    di                    ; save DI
+    push    di                     ; save DI
     dec     di
-    mov     byte ptr [di], '$'    ; replace the 0 terminator with '$'
+    mov     byte ptr [di], '$'     ; replace 0 with '$' for AH=09h
     mov     dx, offset argV
     mov     ah, 09h
     int     21h
     ; Print CR/LF
     mov     ah, 02h
-    mov     dl, 0Dh  ; CR
+    mov     dl, 0Dh
     int     21h
-    mov     dl, 0Ah  ; LF
+    mov     dl, 0Ah
     int     21h
-    ; Restore the 0 terminator
+    ; Restore 0 terminator
     pop     di
     mov     byte ptr [di], 0
 
     ;---------------------------------------------------------------------
-    ; 7) Set our Disk Transfer Area for file search => AH=1Ah
+    ; 7) Set DTA => AH=1Ah
     ;---------------------------------------------------------------------
     mov     dx, offset dta
     mov     ah, 1Ah
     int     21h
 
     ;---------------------------------------------------------------------
-    ; 8) "Find First" => AH=4Eh, DS:DX => argV, CX=0 => normal files
+    ; 8) Find First => AH=4Eh
+    ;    IMPORTANT: set CX=0x10 to see directories *and* normal files
     ;---------------------------------------------------------------------
-    mov     dx, offset argV
-    mov     cx, 0
+    mov     dx, offset argV  ; DS:DX => path
+    mov     cx, 0010h         ; bit 4 => include directories (and normal files)
     mov     ah, 4Eh
     int     21h
-    jc      no_files         ; carry set => error => no files found
+    jc      no_files         ; if CF=1 => no files/dirs found
 
 print_loop:
     ;---------------------------------------------------------------------
-    ; 9) Print the file name from the DTA at offset 1Eh (11 bytes, space-padded)
+    ; 9) Print the 8.3 name from the DTA. In DOS 3.x+, offset 1Eh => 11 bytes
     ;---------------------------------------------------------------------
     mov     si, offset dta
-    add     si, 1Eh          ; point SI to the 11-byte "FILENAMEEXT"
+    add     si, 1Eh          ; point to filename in DTA
     mov     cx, 11
 
 print_file:
-    lodsb                   ; AL = [DS:SI], SI++
+    lodsb                   ; AL=[DS:SI]
     cmp     al, ' '
     je      skip_char
     mov     dl, al
-    mov     ah, 02h         ; DOS: print char in DL
+    mov     ah, 02h
     int     21h
 skip_char:
     loop    print_file
 
+    ;---------------------------------------------------------------------
+    ; 9a) Check if this is a directory. DTA offset 15h => file attribute
+    ;     bit 4 set => directory
+    ;---------------------------------------------------------------------
+    mov     al, [dta+15h]
+    test    al, 10h         ; is bit 4 set?
+    jz      not_dir
+    ; If directory, print " <DIR>"
+    mov     si, offset msgDir
+print_dir:
+    lodsb
+    cmp     al, 0
+    je      done_print_dir
+    mov     dl, al
+    mov     ah, 02h
+    int     21h
+    jmp     print_dir
+done_print_dir:
+
+not_dir:
     ; Print CR/LF
     mov     dl, 0Dh
     mov     ah, 02h
@@ -144,30 +165,27 @@ skip_char:
     int     21h
 
     ;---------------------------------------------------------------------
-    ; 10) "Find Next" => AH=4Fh
+    ; 10) Find Next => AH=4Fh
     ;---------------------------------------------------------------------
     mov     ah, 4Fh
     int     21h
-    jnc     print_loop   ; if no error => we have another file => loop
+    jnc     print_loop      ; if no error => got another => loop
 
     jmp     done_listing
 
 no_files:
-    ;---------------------------------------------------------------------
-    ; If "Find First" failed => print "No files found."
-    ;---------------------------------------------------------------------
     mov     dx, offset msgNoFiles
     mov     ah, 09h
     int     21h
 
 done_listing:
-    ;---------------------------------------------------------------------
-    ; Print "[Done]" then exit
-    ;---------------------------------------------------------------------
     mov     dx, offset msgDone
     mov     ah, 09h
     int     21h
 
+    ;---------------------------------------------------------------------
+    ; 11) Exit to DOS
+    ;---------------------------------------------------------------------
     mov     ax, 4C00h
     int     21h
 
